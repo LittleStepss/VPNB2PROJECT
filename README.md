@@ -1,100 +1,159 @@
 # VPNB2PROJECT
 
-Pour copier les fichiers nécessaires depuis le serveur VPN vers le client, vous pouvez utiliser des outils comme `scp` (secure copy) pour transférer les fichiers de manière sécurisée. Voici les étapes détaillées pour effectuer cette opération :
+L'erreur "No such file or directory" se produit parce que le script `build-ca` n'est pas directement accessible après l'installation d'OpenVPN et easy-rsa. Nous devons d'abord configurer easy-rsa correctement. Voici les étapes à suivre pour configurer easy-rsa et corriger cette erreur.
 
-### 1. Localisation des Fichiers sur le Serveur VPN
+### Configuration d'easy-rsa
 
-Assurez-vous que les fichiers suivants sont bien situés dans le répertoire correct sur votre serveur VPN :
-- `ca.crt` : `/etc/openvpn/ca.crt`
-- `client1.crt` : `/etc/openvpn/client1.crt`
-- `client1.key` : `/etc/openvpn/client1.key`
-- `ta.key` : `/etc/openvpn/ta.key`
+1. **Installation d'OpenVPN et easy-rsa** :
+    ```bash
+    sudo apt update
+    sudo apt install openvpn easy-rsa
+    ```
 
-### 2. Transfert des Fichiers vers le Client
+2. **Copie des fichiers easy-rsa dans le répertoire de travail** :
+    ```bash
+    make-cadir ~/openvpn-ca
+    cd ~/openvpn-ca
+    ```
 
-#### Utilisation de `scp`
+3. **Initialisation du répertoire easy-rsa** :
+    ```bash
+    cp -r /usr/share/easy-rsa/* .
+    ```
 
-Supposons que l'utilisateur du client s'appelle `clientuser` et que l'adresse IP ou le nom de domaine du client soit `client_ip_or_domain`.
+4. **Modification du fichier `vars` pour ajuster les paramètres** :
+    Ouvrir le fichier `vars` avec un éditeur de texte :
+    ```bash
+    nano vars
+    ```
 
-Sur le serveur VPN, exécutez les commandes suivantes pour transférer les fichiers :
+    Et modifier les lignes suivantes en fonction de vos besoins :
+    ```bash
+    set_var EASYRSA_REQ_COUNTRY    "FR"
+    set_var EASYRSA_REQ_PROVINCE   "YourProvince"
+    set_var EASYRSA_REQ_CITY       "YourCity"
+    set_var EASYRSA_REQ_ORG        "YourOrganization"
+    set_var EASYRSA_REQ_EMAIL      "YourEmail@example.com"
+    set_var EASYRSA_REQ_OU         "YourOrganizationalUnit"
+    ```
 
-```bash
-# Transfert du fichier ca.crt
-scp /etc/openvpn/ca.crt clientuser@client_ip_or_domain:/home/clientuser/
+5. **Sourcer le fichier `vars`** :
+    ```bash
+    source vars
+    ```
 
-# Transfert du fichier client1.crt
-scp /etc/openvpn/client1.crt clientuser@client_ip_or_domain:/home/clientuser/
+6. **Nettoyer le répertoire de certificats précédents (le cas échéant)** :
+    ```bash
+    ./easyrsa clean-all
+    ```
 
-# Transfert du fichier client1.key
-scp /etc/openvpn/client1.key clientuser@client_ip_or_domain:/home/clientuser/
+7. **Construire l'Autorité de Certification (CA)** :
+    ```bash
+    ./easyrsa build-ca
+    ```
 
-# Transfert du fichier ta.key
-scp /etc/openvpn/ta.key clientuser@client_ip_or_domain:/home/clientuser/
-```
+### Création des certificats et des clés
 
-#### Utilisation de `rsync` (option alternative)
+1. **Générer la clé et le certificat pour le serveur** :
+    ```bash
+    ./easyrsa build-server-full server nopass
+    ```
 
-Vous pouvez également utiliser `rsync` pour transférer les fichiers, ce qui est particulièrement utile pour synchroniser des fichiers entre deux machines :
+2. **Générer la clé Diffie-Hellman** :
+    ```bash
+    ./easyrsa gen-dh
+    ```
 
-```bash
-# Transfert du fichier ca.crt
-rsync -avz /etc/openvpn/ca.crt clientuser@client_ip_or_domain:/home/clientuser/
+3. **Générer le fichier de clé TLS auth** :
+    ```bash
+    openvpn --genkey --secret ta.key
+    ```
 
-# Transfert du fichier client1.crt
-rsync -avz /etc/openvpn/client1.crt clientuser@client_ip_or_domain:/home/clientuser/
+4. **Générer les clés et certificats pour les clients** (par exemple, pour `client1`) :
+    ```bash
+    ./easyrsa build-client-full client1 nopass
+    ```
 
-# Transfert du fichier client1.key
-rsync -avz /etc/openvpn/client1.key clientuser@client_ip_or_domain:/home/clientuser/
+### Configuration du Serveur OpenVPN
 
-# Transfert du fichier ta.key
-rsync -avz /etc/openvpn/ta.key clientuser@client_ip_or_domain:/home/clientuser/
-```
+1. **Créer un fichier de configuration `/etc/openvpn/server.conf`** :
+    ```bash
+    sudo nano /etc/openvpn/server.conf
+    ```
 
-### 3. Configuration du Client VPN
+    Et y ajouter les lignes suivantes :
+    ```conf
+    port 1194
+    proto udp
+    dev tun
+    ca /etc/openvpn/ca.crt
+    cert /etc/openvpn/server.crt
+    key /etc/openvpn/server.key
+    dh /etc/openvpn/dh.pem
+    server 10.8.0.0 255.255.255.0
+    ifconfig-pool-persist /var/log/openvpn/ipp.txt
+    push "redirect-gateway def1 bypass-dhcp"
+    push "dhcp-option DNS 8.8.8.8"
+    push "dhcp-option DNS 8.8.4.4"
+    keepalive 10 120
+    tls-auth /etc/openvpn/ta.key 0
+    cipher AES-256-CBC
+    user nobody
+    group nogroup
+    persist-key
+    persist-tun
+    status /var/log/openvpn/openvpn-status.log
+    log-append /var/log/openvpn/openvpn.log
+    verb 3
+    ```
 
-Sur le client, vous devez déplacer ces fichiers vers un répertoire sécurisé et créer le fichier de configuration OpenVPN.
+2. **Copier les fichiers générés dans le répertoire d'OpenVPN** :
+    ```bash
+    sudo cp ~/openvpn-ca/ta.key /etc/openvpn/
+    sudo cp ~/openvpn-ca/pki/ca.crt /etc/openvpn/
+    sudo cp ~/openvpn-ca/pki/private/server.key /etc/openvpn/
+    sudo cp ~/openvpn-ca/pki/issued/server.crt /etc/openvpn/
+    sudo cp ~/openvpn-ca/pki/dh.pem /etc/openvpn/
+    ```
 
-1. **Déplacer les fichiers dans le répertoire OpenVPN** :
+3. **Configurer le firewall** :
+    ```bash
+    sudo ufw allow 1194/udp
+    sudo ufw enable
+    ```
 
-```bash
-sudo mv /home/clientuser/ca.crt /etc/openvpn/
-sudo mv /home/clientuser/client1.crt /etc/openvpn/
-sudo mv /home/clientuser/client1.key /etc/openvpn/
-sudo mv /home/clientuser/ta.key /etc/openvpn/
-```
+4. **Démarrer et activer le service OpenVPN** :
+    ```bash
+    sudo systemctl start openvpn@server
+    sudo systemctl enable openvpn@server
+    ```
 
-2. **Créer le fichier de configuration du client** :
+### Configuration du Client VPN
 
-Créez un fichier `/etc/openvpn/client.conf` et ajoutez-y les configurations suivantes :
+1. **Copier les fichiers nécessaires vers le client** :
+    - `ca.crt`, `client1.crt`, `client1.key`, `ta.key`.
 
-```conf
-client
-dev tun
-proto udp
-remote YOUR_SERVER_IP 1194
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-ca /etc/openvpn/ca.crt
-cert /etc/openvpn/client1.crt
-key /etc/openvpn/client1.key
-remote-cert-tls server
-tls-auth /etc/openvpn/ta.key 1
-cipher AES-256-CBC
-verb 3
-```
+2. **Créer un fichier de configuration client** :
+    - Pour un client Linux, créer `/etc/openvpn/client.conf` :
+    ```conf
+    client
+    dev tun
+    proto udp
+    remote YOUR_SERVER_IP 1194
+    resolv-retry infinite
+    nobind
+    persist-key
+    persist-tun
+    ca ca.crt
+    cert client1.crt
+    key client1.key
+    remote-cert-tls server
+    tls-auth ta.key 1
+    cipher AES-256-CBC
+    verb 3
+    ```
 
-Remplacez `YOUR_SERVER_IP` par l'adresse IP publique de votre serveur VPN.
-
-3. **Lancer la connexion VPN** :
-
-Pour démarrer la connexion VPN sur le client, exécutez :
-
-```bash
-sudo openvpn --config /etc/openvpn/client.conf
-```
-
-### Résumé
-
-En suivant ces étapes, vous avez sécurisé les fichiers nécessaires depuis le serveur VPN vers le client, configuré le client avec les certificats et les clés nécessaires, et établi une connexion VPN. Vous êtes maintenant prêt à utiliser votre VPN pour accéder à l'intranet depuis l'extérieur.
+3. **Connecter le client au VPN** :
+    ```bash
+    sudo openvpn --config /etc/openvpn/client.conf
+    ```
